@@ -10,6 +10,7 @@
 #include <rte_cycles.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
+#include <rte_net.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -128,7 +129,8 @@ lcore_main(void)
 			rte_lcore_id());
 
 	/* Main work of application loop. 8< */
-	for (;;) {
+	for (uint32_t s = 0;; s++) {
+		if (s % (1 << 26) == 0) printf("MAIN: heartbeat %d\n", s / (1 << 26));
 		/*
 		 * Receive packets on a port and forward them on the paired
 		 * port. The mapping is 0 -> 1, 1 -> 0, 2 -> 3, 3 -> 2, etc.
@@ -143,15 +145,14 @@ lcore_main(void)
 			if (unlikely(nb_rx == 0))
 				continue;
 
-			/* Send burst of TX packets, to second port of pair. */
-			const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0,
-					bufs, nb_rx);
+			printf("MAIN: Received %d packets on port %u.\n", nb_rx, port);
+			for (uint16_t i = 0; i < nb_rx; i++) {
+				struct rte_mbuf *mbuf = bufs[i];
 
-			/* Free any unsent packets. */
-			if (unlikely(nb_tx < nb_rx)) {
-				uint16_t buf;
-				for (buf = nb_tx; buf < nb_rx; buf++)
-					rte_pktmbuf_free(bufs[buf]);
+				printf("MAIN: packet number %ld with size %d\n",
+					i, mbuf->buf_len);
+
+				rte_pktmbuf_free(mbuf);
 			}
 		}
 	}

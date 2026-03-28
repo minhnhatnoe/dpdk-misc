@@ -37,4 +37,13 @@ Remove promiscuous
 
 ## The underlying layers
 
-Before we get to ping, recall that your 
+Before we get to ping, recall that ARP
+
+`https://doc.dpdk.org/guides/prog_guide/mbuf_lib.html`
+
+Heartbeat
+
+
+Parse ether to see what it is. Use pktmbuf_read, look at ether_type. In general, we refer to `https://github.com/ceph/dpdk/blob/master/lib/librte_net/rte_net.c`'s `rte_net_get_ptype`.
+
+
