@@ -242,6 +242,8 @@ lcore_main(void)
 							},
 						};
 
+						// Template for ARP replies. Networking works normally on AWS without this.
+						/*
 						struct rte_mbuf *reply_mbuf = rte_pktmbuf_alloc(mbuf->pool);
 						if (reply_mbuf == NULL) {
 							rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to allocate mbuf for ARP reply\n");
@@ -260,6 +262,7 @@ lcore_main(void)
 						} else {
 							printf("MAIN: Sent ARP reply on port %u.\n", port);
 						}
+						*/
 					} else {
 						rte_exit(EXIT_FAILURE, "MAIN: WARNING: rogue ARP packet\n");
 					}
