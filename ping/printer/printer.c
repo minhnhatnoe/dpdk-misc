@@ -193,6 +193,35 @@ arp_handler(struct rte_mbuf *mbuf, uint32_t offset, struct rte_ether_hdr const *
 	}
 }
 
+static inline void
+packet_handler(uint16_t port, struct rte_mbuf *mbuf,
+			   uint32_t ip_addrs[RTE_MAX_ETHPORTS], struct rte_ether_addr mac_addrs[RTE_MAX_ETHPORTS]) {
+	uint32_t offset = 0;
+	struct rte_ether_hdr ether_hdr_tmp;
+	struct rte_ether_hdr const *ether_hdr = rte_pktmbuf_read(
+		mbuf, offset, sizeof ether_hdr_tmp, &ether_hdr_tmp);
+	offset += sizeof ether_hdr_tmp;
+
+	if (ether_hdr == NULL) {
+		rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for Ethernet header\n");
+	}
+	if (!rte_is_same_ether_addr(&ether_hdr->dst_addr, &mac_addrs[port]) &&
+		!rte_is_broadcast_ether_addr(&ether_hdr->dst_addr)) {
+		rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet is not for us\n");
+	}
+
+	uint16_t ether_type = rte_be_to_cpu_16(ether_hdr->ether_type);
+	if (ether_type == RTE_ETHER_TYPE_IPV4) {
+		printf("MAIN: is IPv4\n");
+
+	} else if (ether_type == RTE_ETHER_TYPE_ARP) {
+		printf("MAIN: is ARP\n");
+		arp_handler(mbuf, offset, ether_hdr, port, &ip_addrs[port], &mac_addrs[port]);
+	} else {
+		printf("MAIN: WARNING: Unknown ether type\n");
+	}
+}
+
 /* >8 End of main functional part of port initialization. */
 
 /*
@@ -254,30 +283,7 @@ lcore_main(void)
 				printf("MAIN: packet number %d with size %d\n",
 					i, mbuf->buf_len);
 
-				uint32_t offset = 0;
-				struct rte_ether_hdr ether_hdr_tmp;
-				struct rte_ether_hdr const *ether_hdr = rte_pktmbuf_read(
-					mbuf, offset, sizeof ether_hdr_tmp, &ether_hdr_tmp);
-				offset += sizeof ether_hdr_tmp;
-
-				if (!rte_is_same_ether_addr(&ether_hdr->dst_addr, &mac_addrs[port]) &&
-					!rte_is_broadcast_ether_addr(&ether_hdr->dst_addr)) {
-					rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet is not for us\n");
-				}
-				if (ether_hdr == NULL) {
-					rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for Ethernet header\n");
-				}
-
-				uint16_t ether_type = rte_be_to_cpu_16(ether_hdr->ether_type);
-				if (ether_type == RTE_ETHER_TYPE_IPV4) {
-					printf("MAIN: is IPv4\n");
-				} else if (ether_type == RTE_ETHER_TYPE_ARP) {
-					printf("MAIN: is ARP\n");
-					arp_handler(mbuf, offset, ether_hdr, port, &ip_addrs[port], &mac_addrs[port]);
-				} else {
-					printf("MAIN: WARNING: Unknown ether type\n");
-				}
-
+				packet_handler(port, mbuf, ip_addrs, mac_addrs);
 				rte_pktmbuf_free(mbuf);
 			}
 		}

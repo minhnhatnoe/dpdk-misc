@@ -74,3 +74,9 @@ We first have to know our address. Coincidentally AWS ENA interfaces receive onl
 We also verify that all packets are addressed to us.
 
 ### Ping
+
+Official name is ICMP Echo Request.
+
+Runs on top of IPv4.
+
+
