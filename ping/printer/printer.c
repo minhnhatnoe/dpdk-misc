@@ -152,6 +152,23 @@ lcore_main(void)
 				printf("MAIN: packet number %ld with size %d\n",
 					i, mbuf->buf_len);
 
+				uint32_t offset = 0;
+				struct rte_ether_hdr ether_hdr_tmp;
+				struct rte_ether_hdr const *ether_hdr = rte_pktmbuf_read(mbuf, offset, sizeof ether_hdr_tmp, &ether_hdr_tmp);
+				offset += sizeof ether_hdr_tmp;
+
+				if (ether_hdr == NULL) {
+					printf("MAIN: WARNING: packet too short for Ethernet header\n");
+					continue;
+				}
+
+				uint16_t ether_type = rte_be_to_cpu_16(ether_hdr->ether_type);
+				if (ether_type == RTE_ETHER_TYPE_ARP) {
+					printf("MAIN: is ARP\n");
+				} else {
+					printf("MAIN: WARNING: Unknown ether type\n");
+				}
+
 				rte_pktmbuf_free(mbuf);
 			}
 		}
