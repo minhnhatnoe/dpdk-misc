@@ -101,6 +101,98 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	return 0;
 }
+
+static inline void
+arp_handler(struct rte_mbuf *mbuf, uint32_t offset, struct rte_ether_hdr const *ether_hdr,
+		    uint16_t port, uint32_t *port_ip_addr, struct rte_ether_addr *port_mac_addr) {
+	struct rte_arp_hdr arp_hdr_tmp;
+	struct rte_arp_hdr const *arp_hdr = rte_pktmbuf_read(
+		mbuf, offset, sizeof arp_hdr_tmp, &arp_hdr_tmp);
+	offset += sizeof arp_hdr_tmp;
+
+	if (arp_hdr == NULL) {
+		rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for ARP header\n");
+	}
+
+	if (rte_be_to_cpu_16(arp_hdr->arp_hardware) != RTE_ARP_HRD_ETHER ||
+		rte_be_to_cpu_16(arp_hdr->arp_protocol) != RTE_ETHER_TYPE_IPV4 ||
+		arp_hdr->arp_hlen != sizeof(struct rte_ether_addr) ||
+		arp_hdr->arp_plen != sizeof(rte_be32_t)) {
+		rte_exit(EXIT_FAILURE, "MAIN: WARNING: ARP header has unexpected format\n");
+	}
+
+	struct rte_arp_ipv4 const *arp_data = &arp_hdr->arp_data;
+	if (rte_be_to_cpu_16(arp_hdr->arp_opcode) == RTE_ARP_OP_REQUEST) {
+		char ip_str_target[INET_ADDRSTRLEN];
+		if (!inet_ntop(AF_INET, &arp_data->arp_tip, ip_str_target, sizeof ip_str_target)) {
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: inet_ntop failed\n");
+		}
+
+		if (arp_data->arp_tip != *port_ip_addr && *port_ip_addr) {
+			char ip_str_port[INET_ADDRSTRLEN];
+			if (!inet_ntop(AF_INET, port_ip_addr, ip_str_port, sizeof ip_str_port)) {
+				rte_exit(EXIT_FAILURE, "MAIN: WARNING: inet_ntop failed\n");
+			}
+			rte_exit(EXIT_FAILURE, "MAIN: port %d's ip address is %s, but ARP request is for %s\n",
+				port, ip_str_port, ip_str_target);
+		}
+
+		printf("MAIN: is ARP request for us\n");
+		if (!*port_ip_addr) {
+			printf("MAIN: port %d's ip address is %s\n", port, ip_str_target);
+			*port_ip_addr = arp_data->arp_tip;
+		}
+
+		struct {
+			struct rte_ether_hdr ether_hdr;
+			struct rte_arp_hdr arp_hdr;
+		} __attribute__((packed)) arp_reply_payload = {
+			.ether_hdr = {
+				.dst_addr = ether_hdr->src_addr,
+				.src_addr = *port_mac_addr,
+				.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP),
+			},
+			.arp_hdr = {
+				.arp_hardware = rte_cpu_to_be_16(RTE_ARP_HRD_ETHER),
+				.arp_protocol = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4),
+				.arp_hlen = sizeof(struct rte_ether_addr),
+				.arp_plen = sizeof(rte_be32_t),
+				.arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY),
+				.arp_data = {
+					.arp_sha = *port_mac_addr,
+					.arp_sip = *port_ip_addr,
+					.arp_tha = arp_data->arp_sha,
+					.arp_tip = arp_data->arp_sip,
+				},
+			},
+		};
+
+		// Template for ARP replies. Networking works normally on AWS without this.
+		/*
+		struct rte_mbuf *reply_mbuf = rte_pktmbuf_alloc(mbuf->pool);
+		if (reply_mbuf == NULL) {
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to allocate mbuf for ARP reply\n");
+		}
+
+		char *reply_data = rte_pktmbuf_append(reply_mbuf, sizeof arp_reply_payload);
+		if (reply_data == NULL) {
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to append data to mbuf for ARP reply\n");
+		}
+		memcpy(reply_data, &arp_reply_payload, sizeof arp_reply_payload);
+		
+		const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &reply_mbuf, 1);
+		if (nb_tx < 1) {
+			rte_pktmbuf_free(reply_mbuf);
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to send ARP reply\n");
+		} else {
+			printf("MAIN: Sent ARP reply on port %u.\n", port);
+		}
+		*/
+	} else {
+		rte_exit(EXIT_FAILURE, "MAIN: WARNING: rogue ARP packet\n");
+	}
+}
+
 /* >8 End of main functional part of port initialization. */
 
 /*
@@ -177,95 +269,11 @@ lcore_main(void)
 				}
 
 				uint16_t ether_type = rte_be_to_cpu_16(ether_hdr->ether_type);
-				if (ether_type == RTE_ETHER_TYPE_ARP) {
+				if (ether_type == RTE_ETHER_TYPE_IPV4) {
+					printf("MAIN: is IPv4\n");
+				} else if (ether_type == RTE_ETHER_TYPE_ARP) {
 					printf("MAIN: is ARP\n");
-
-					struct rte_arp_hdr arp_hdr_tmp;
-					struct rte_arp_hdr const *arp_hdr = rte_pktmbuf_read(
-						mbuf, offset, sizeof arp_hdr_tmp, &arp_hdr_tmp);
-					offset += sizeof arp_hdr_tmp;
-
-					if (arp_hdr == NULL) {
-						rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for ARP header\n");
-					}
-
-					if (rte_be_to_cpu_16(arp_hdr->arp_hardware) != RTE_ARP_HRD_ETHER ||
-						rte_be_to_cpu_16(arp_hdr->arp_protocol) != RTE_ETHER_TYPE_IPV4 ||
-						arp_hdr->arp_hlen != sizeof(struct rte_ether_addr) ||
-						arp_hdr->arp_plen != sizeof(rte_be32_t)) {
-						rte_exit(EXIT_FAILURE, "MAIN: WARNING: ARP header has unexpected format\n");
-					}
-
-					struct rte_arp_ipv4 const *arp_data = &arp_hdr->arp_data;
-					if (rte_be_to_cpu_16(arp_hdr->arp_opcode) == RTE_ARP_OP_REQUEST) {
-						char ip_str_target[INET_ADDRSTRLEN];
-						if (!inet_ntop(AF_INET, &arp_data->arp_tip, ip_str_target, sizeof ip_str_target)) {
-							rte_exit(EXIT_FAILURE, "MAIN: WARNING: inet_ntop failed\n");
-						}
-
-						if (arp_data->arp_tip != ip_addrs[port] && ip_addrs[port]) {
-							char ip_str_port[INET_ADDRSTRLEN];
-							if (!inet_ntop(AF_INET, &ip_addrs[port], ip_str_port, sizeof ip_str_port)) {
-								rte_exit(EXIT_FAILURE, "MAIN: WARNING: inet_ntop failed\n");
-							}
-							rte_exit(EXIT_FAILURE, "MAIN: port %d's ip address is %s, but ARP request is for %s\n",
-								port, ip_str_port, ip_str_target);
-						}
-
-						printf("MAIN: is ARP request for us\n");
-						if (!ip_addrs[port]) {
-							printf("MAIN: port %d's ip address is %s\n", port, ip_str_target);
-							ip_addrs[port] = arp_data->arp_tip;
-						}
-
-						struct {
-							struct rte_ether_hdr ether_hdr;
-							struct rte_arp_hdr arp_hdr;
-						} __attribute__((packed)) arp_reply_payload = {
-							.ether_hdr = {
-								.dst_addr = ether_hdr->src_addr,
-								.src_addr = mac_addrs[port],
-								.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP),
-							},
-							.arp_hdr = {
-								.arp_hardware = rte_cpu_to_be_16(RTE_ARP_HRD_ETHER),
-								.arp_protocol = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4),
-								.arp_hlen = sizeof(struct rte_ether_addr),
-								.arp_plen = sizeof(rte_be32_t),
-								.arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY),
-								.arp_data = {
-									.arp_sha = mac_addrs[port],
-									.arp_sip = ip_addrs[port],
-									.arp_tha = arp_data->arp_sha,
-									.arp_tip = arp_data->arp_sip,
-								},
-							},
-						};
-
-						// Template for ARP replies. Networking works normally on AWS without this.
-						/*
-						struct rte_mbuf *reply_mbuf = rte_pktmbuf_alloc(mbuf->pool);
-						if (reply_mbuf == NULL) {
-							rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to allocate mbuf for ARP reply\n");
-						}
-
-						char *reply_data = rte_pktmbuf_append(reply_mbuf, sizeof arp_reply_payload);
-						if (reply_data == NULL) {
-							rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to append data to mbuf for ARP reply\n");
-						}
-						memcpy(reply_data, &arp_reply_payload, sizeof arp_reply_payload);
-						
-						const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &reply_mbuf, 1);
-						if (nb_tx < 1) {
-							rte_pktmbuf_free(reply_mbuf);
-							rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to send ARP reply\n");
-						} else {
-							printf("MAIN: Sent ARP reply on port %u.\n", port);
-						}
-						*/
-					} else {
-						rte_exit(EXIT_FAILURE, "MAIN: WARNING: rogue ARP packet\n");
-					}
+					arp_handler(mbuf, offset, ether_hdr, port, &ip_addrs[port], &mac_addrs[port]);
 				} else {
 					printf("MAIN: WARNING: Unknown ether type\n");
 				}

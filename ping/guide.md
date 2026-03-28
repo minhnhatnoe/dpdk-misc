@@ -73,6 +73,4 @@ We first have to know our address. Coincidentally AWS ENA interfaces receive onl
 
 We also verify that all packets are addressed to us.
 
-#### Requests
-
-Check with `arp -a`. 
+### Ping
