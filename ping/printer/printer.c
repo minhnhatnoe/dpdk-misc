@@ -212,8 +212,125 @@ packet_handler(uint16_t port, struct rte_mbuf *mbuf,
 
 	uint16_t ether_type = rte_be_to_cpu_16(ether_hdr->ether_type);
 	if (ether_type == RTE_ETHER_TYPE_IPV4) {
-		printf("MAIN: is IPv4\n");
+		// printf("MAIN: is IPv4\n");
 
+		struct rte_ipv4_hdr ipv4_hdr_tmp;
+		struct rte_ipv4_hdr const *ipv4_hdr = rte_pktmbuf_read(
+			mbuf, offset, sizeof ipv4_hdr_tmp, &ipv4_hdr_tmp);
+		offset += sizeof ipv4_hdr_tmp;
+
+		if (ipv4_hdr == NULL) {
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for IPv4 header\n");
+		}
+		
+		if (!ip_addrs[port]) {
+			printf("MAIN: WARNING: port %d has not learned its IP address yet, dropping packet\n", port);
+			return;
+		}
+		if (ipv4_hdr->dst_addr != ip_addrs[port]) {
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet's destination IP is not us\n");
+		}
+
+		if (ipv4_hdr->version_ihl != RTE_IPV4_VHL_DEF ||
+			// ipv4_hdr->type_of_service ||
+			(rte_be_to_cpu_16(ipv4_hdr->fragment_offset) & ~RTE_IPV4_HDR_DF_FLAG) // All zeroes DF
+			) {
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: IP packet not supported\n");
+		}
+
+		// Assumes no IPv4 options. Protects us from Ethernet's padding.
+		uint32_t payload_len = rte_be_to_cpu_16(ipv4_hdr->total_length) - sizeof(struct rte_ipv4_hdr);
+		if (offset + payload_len > mbuf->pkt_len) {
+			rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for IPv4 payload\n");
+		}
+
+		// Assume checksum is correct
+		if (ipv4_hdr->next_proto_id == IPPROTO_ICMP) {
+			// printf("MAIN: is ICMP\n");
+			
+			struct rte_icmp_hdr icmp_hdr_tmp;
+			struct rte_icmp_hdr const *icmp_hdr = rte_pktmbuf_read(
+				mbuf, offset, sizeof icmp_hdr_tmp, &icmp_hdr_tmp);
+			offset += sizeof icmp_hdr_tmp;
+			payload_len -= sizeof(struct rte_icmp_hdr);
+
+			if (icmp_hdr == NULL) {
+				rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for ICMP header\n");
+			}
+
+			if (icmp_hdr->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) {
+				// printf("MAIN: is ICMP echo request\n");
+
+				if (mbuf->next) {
+					rte_exit(EXIT_FAILURE, "MAIN: WARNING: we don't support multi-segment pings\n");
+				}
+
+				// Craft a response
+				struct rte_mbuf *reply_mbuf = rte_pktmbuf_alloc(mbuf->pool);
+				if (reply_mbuf == NULL) {
+					rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to allocate mbuf for ICMP reply\n");
+				}
+
+				struct icmp_reply_hdrs_t {
+					struct rte_ether_hdr ether_hdr;
+					struct rte_ipv4_hdr ipv4_hdr;
+					struct rte_icmp_hdr icmp_hdr;
+				} *reply_data = (void*) rte_pktmbuf_append(
+					reply_mbuf, sizeof(struct icmp_reply_hdrs_t) + payload_len);
+				static_assert(
+					sizeof(struct icmp_reply_hdrs_t) ==
+					sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr),
+					"icmp_reply_hdrs_t must have no padding"
+				);
+
+				if (reply_data == NULL) {
+					rte_pktmbuf_free(reply_mbuf);
+					rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to append data to mbuf for ICMP reply\n");
+				}
+				*reply_data = (struct icmp_reply_hdrs_t){
+					.ether_hdr = {
+						.dst_addr = ether_hdr->src_addr,
+						.src_addr = mac_addrs[port],
+						.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4),
+					},
+					.ipv4_hdr = {
+						.version_ihl = RTE_IPV4_VHL_DEF,
+						.type_of_service = 0,
+						.total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr) + payload_len),
+						.packet_id = 0,
+						.fragment_offset = rte_cpu_to_be_16(RTE_IPV4_HDR_DF_FLAG),
+						.time_to_live = 64,
+						.next_proto_id = IPPROTO_ICMP,
+						.hdr_checksum = 0,
+						.src_addr = ip_addrs[port],
+						.dst_addr = ipv4_hdr->src_addr,
+					},
+					.icmp_hdr = {
+						.icmp_type = RTE_IP_ICMP_ECHO_REPLY,
+						.icmp_code = 0,
+						.icmp_cksum = 0,
+						.icmp_ident = icmp_hdr->icmp_ident,
+						.icmp_seq_nb = icmp_hdr->icmp_seq_nb,
+					}
+				};
+
+				memcpy(reply_data + 1, rte_pktmbuf_mtod_offset(mbuf, char*, offset), payload_len);
+				reply_data->ipv4_hdr.hdr_checksum = rte_ipv4_cksum(&reply_data->ipv4_hdr);
+				reply_data->icmp_hdr.icmp_cksum = ~rte_raw_cksum(&reply_data->icmp_hdr, sizeof(struct rte_icmp_hdr) + payload_len);
+
+				const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &reply_mbuf, 1);
+				if (nb_tx < 1) {
+					rte_pktmbuf_free(reply_mbuf);
+					rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to send ICMP reply\n");
+				} else {
+					// printf("MAIN: Sent ICMP reply on port %u.\n", port);
+				}
+			} else {
+				rte_exit(EXIT_FAILURE, "MAIN: WARNING: Unknown ICMP type\n");
+			}
+		} else {
+			printf("MAIN: WARNING: Unknown IPv4 next protocol\n");
+		}
 	} else if (ether_type == RTE_ETHER_TYPE_ARP) {
 		printf("MAIN: is ARP\n");
 		arp_handler(mbuf, offset, ether_hdr, port, &ip_addrs[port], &mac_addrs[port]);
@@ -261,7 +378,7 @@ lcore_main(void)
 
 	/* Main work of application loop. 8< */
 	for (uint32_t s = 0;; s++) {
-		if (s % (1 << 26) == 0) printf("MAIN: heartbeat %d\n", s / (1 << 26));
+		// if (s % (1 << 26) == 0) printf("MAIN: heartbeat %d\n", s / (1 << 26));
 		/*
 		 * Receive packets on a port and forward them on the paired
 		 * port. The mapping is 0 -> 1, 1 -> 0, 2 -> 3, 3 -> 2, etc.
@@ -276,12 +393,12 @@ lcore_main(void)
 			if (unlikely(nb_rx == 0))
 				continue;
 
-			printf("MAIN: Received %d packets on port %u.\n", nb_rx, port);
+			// printf("MAIN: Received %d packets on port %u.\n", nb_rx, port);
 			for (uint16_t i = 0; i < nb_rx; i++) {
 				struct rte_mbuf *mbuf = bufs[i];
 
-				printf("MAIN: packet number %d with size %d\n",
-					i, mbuf->buf_len);
+				// printf("MAIN: packet number %d with size %d\n",
+				// 	i, mbuf->buf_len);
 
 				packet_handler(port, mbuf, ip_addrs, mac_addrs);
 				rte_pktmbuf_free(mbuf);

@@ -73,10 +73,46 @@ We first have to know our address. Coincidentally AWS ENA interfaces receive onl
 
 We also verify that all packets are addressed to us.
 
+### IPv4
+
+Ping runs on top of IPv4 so we need to parse it.
+
+`https://en.wikipedia.org/wiki/IPv4#Packet_structure`
+
+Nobody uses IPv4 fragmenting. It's so uncommon that IPv6 moved it to an extension.
+
+Payload len: Ethernet may pad since min Ethernet payload is 42 bytes to support collision detection for L1. Lower-sized frames are called runt.
+
 ### Ping
 
-Official name is ICMP Echo Request.
+Most common protocol to use for this is ICMP Echo Request.
 
 Runs on top of IPv4.
 
+Calculate the checksum.
+
+#### Testing
+
+`ping 172.31.37.62 -I enp39s0 -i 0.1`
+
+`sudo tcpdump -i enp41s0`
+
+`sudo ip netns add ns_test`: Create namespace
+
+`sudo ip netns exec ns_test ip a`: Check addresses in namespace
+
+```
+ip netns exec ns_test ip addr add 172.31.37.62/20 dev enp41s0
+ip netns exec ns_test ip link set enp41s0 up
+ip netns exec ns_test ip link set lo up
+```
+To make it look like how it's set up in the default namespace
+
+`sudo ip netns exec ns_test tcpdump -i enp41s0 icmp -l`: -l to make sure tcpdump flushes. It doesn't flush if detect non-interactive
+
+### Performance
+
+Most people come to DPDK for performance, and the piece of code we wrote is actually not very performant.
+
+`ping 172.31.37.62 -I enp39s0 -i 0.1 -c 1000`
 
