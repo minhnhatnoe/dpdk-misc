@@ -18,7 +18,7 @@ Security group allows all incoming and outgoing traffic
 
 ### Setting up
 
-`sudo apt install dpdk dpdk-dev dpdk-doc dpdk-kmods-dkms`
+`sudo apt install --update dpdk dpdk-dev dpdk-doc dpdk-kmods-dkms`
 
 `sudo modprobe igb_uio`
 
