@@ -11,7 +11,6 @@
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 #include <rte_net.h>
-#include <arpa/inet.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -101,244 +100,6 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	return 0;
 }
-
-static inline void
-arp_handler(struct rte_mbuf *mbuf, uint32_t offset, struct rte_ether_hdr const *ether_hdr,
-		    uint16_t port, uint32_t *port_ip_addr, struct rte_ether_addr *port_mac_addr) {
-	struct rte_arp_hdr arp_hdr_tmp;
-	struct rte_arp_hdr const *arp_hdr = rte_pktmbuf_read(
-		mbuf, offset, sizeof arp_hdr_tmp, &arp_hdr_tmp);
-	offset += sizeof arp_hdr_tmp;
-
-	if (arp_hdr == NULL) {
-		rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for ARP header\n");
-	}
-
-	if (rte_be_to_cpu_16(arp_hdr->arp_hardware) != RTE_ARP_HRD_ETHER ||
-		rte_be_to_cpu_16(arp_hdr->arp_protocol) != RTE_ETHER_TYPE_IPV4 ||
-		arp_hdr->arp_hlen != sizeof(struct rte_ether_addr) ||
-		arp_hdr->arp_plen != sizeof(rte_be32_t)) {
-		rte_exit(EXIT_FAILURE, "MAIN: WARNING: ARP header has unexpected format\n");
-	}
-
-	struct rte_arp_ipv4 const *arp_data = &arp_hdr->arp_data;
-	if (rte_be_to_cpu_16(arp_hdr->arp_opcode) == RTE_ARP_OP_REQUEST) {
-		char ip_str_target[INET_ADDRSTRLEN];
-		if (!inet_ntop(AF_INET, &arp_data->arp_tip, ip_str_target, sizeof ip_str_target)) {
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: inet_ntop failed\n");
-		}
-
-		if (arp_data->arp_tip != *port_ip_addr && *port_ip_addr) {
-			char ip_str_port[INET_ADDRSTRLEN];
-			if (!inet_ntop(AF_INET, port_ip_addr, ip_str_port, sizeof ip_str_port)) {
-				rte_exit(EXIT_FAILURE, "MAIN: WARNING: inet_ntop failed\n");
-			}
-			rte_exit(EXIT_FAILURE, "MAIN: port %d's ip address is %s, but ARP request is for %s\n",
-				port, ip_str_port, ip_str_target);
-		}
-
-		printf("MAIN: is ARP request for us\n");
-		if (!*port_ip_addr) {
-			printf("MAIN: port %d's ip address is %s\n", port, ip_str_target);
-			*port_ip_addr = arp_data->arp_tip;
-		}
-
-		struct {
-			struct rte_ether_hdr ether_hdr;
-			struct rte_arp_hdr arp_hdr;
-		} __attribute__((packed)) arp_reply_payload = {
-			.ether_hdr = {
-				.dst_addr = ether_hdr->src_addr,
-				.src_addr = *port_mac_addr,
-				.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP),
-			},
-			.arp_hdr = {
-				.arp_hardware = rte_cpu_to_be_16(RTE_ARP_HRD_ETHER),
-				.arp_protocol = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4),
-				.arp_hlen = sizeof(struct rte_ether_addr),
-				.arp_plen = sizeof(rte_be32_t),
-				.arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY),
-				.arp_data = {
-					.arp_sha = *port_mac_addr,
-					.arp_sip = *port_ip_addr,
-					.arp_tha = arp_data->arp_sha,
-					.arp_tip = arp_data->arp_sip,
-				},
-			},
-		};
-
-		// Template for ARP replies. Networking works normally on AWS without this.
-		/*
-		struct rte_mbuf *reply_mbuf = rte_pktmbuf_alloc(mbuf->pool);
-		if (reply_mbuf == NULL) {
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to allocate mbuf for ARP reply\n");
-		}
-
-		char *reply_data = rte_pktmbuf_append(reply_mbuf, sizeof arp_reply_payload);
-		if (reply_data == NULL) {
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to append data to mbuf for ARP reply\n");
-		}
-		memcpy(reply_data, &arp_reply_payload, sizeof arp_reply_payload);
-		
-		const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &reply_mbuf, 1);
-		if (nb_tx < 1) {
-			rte_pktmbuf_free(reply_mbuf);
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to send ARP reply\n");
-		} else {
-			printf("MAIN: Sent ARP reply on port %u.\n", port);
-		}
-		*/
-	} else {
-		rte_exit(EXIT_FAILURE, "MAIN: WARNING: rogue ARP packet\n");
-	}
-}
-
-static inline void
-packet_handler(uint16_t port, struct rte_mbuf *mbuf,
-			   uint32_t ip_addrs[RTE_MAX_ETHPORTS], struct rte_ether_addr mac_addrs[RTE_MAX_ETHPORTS]) {
-	uint32_t offset = 0;
-	struct rte_ether_hdr ether_hdr_tmp;
-	struct rte_ether_hdr const *ether_hdr = rte_pktmbuf_read(
-		mbuf, offset, sizeof ether_hdr_tmp, &ether_hdr_tmp);
-	offset += sizeof ether_hdr_tmp;
-
-	if (ether_hdr == NULL) {
-		rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for Ethernet header\n");
-	}
-	if (!rte_is_same_ether_addr(&ether_hdr->dst_addr, &mac_addrs[port]) &&
-		!rte_is_broadcast_ether_addr(&ether_hdr->dst_addr)) {
-		rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet is not for us\n");
-	}
-
-	uint16_t ether_type = rte_be_to_cpu_16(ether_hdr->ether_type);
-	if (ether_type == RTE_ETHER_TYPE_IPV4) {
-		// printf("MAIN: is IPv4\n");
-
-		struct rte_ipv4_hdr ipv4_hdr_tmp;
-		struct rte_ipv4_hdr const *ipv4_hdr = rte_pktmbuf_read(
-			mbuf, offset, sizeof ipv4_hdr_tmp, &ipv4_hdr_tmp);
-		offset += sizeof ipv4_hdr_tmp;
-
-		if (ipv4_hdr == NULL) {
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for IPv4 header\n");
-		}
-		
-		if (!ip_addrs[port]) {
-			printf("MAIN: WARNING: port %d has not learned its IP address yet, dropping packet\n", port);
-			return;
-		}
-		if (ipv4_hdr->dst_addr != ip_addrs[port]) {
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet's destination IP is not us\n");
-		}
-
-		if (ipv4_hdr->version_ihl != RTE_IPV4_VHL_DEF ||
-			// ipv4_hdr->type_of_service ||
-			(rte_be_to_cpu_16(ipv4_hdr->fragment_offset) & ~RTE_IPV4_HDR_DF_FLAG) // All zeroes DF
-			) {
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: IP packet not supported\n");
-		}
-
-		// Assumes no IPv4 options. Protects us from Ethernet's padding.
-		uint32_t payload_len = rte_be_to_cpu_16(ipv4_hdr->total_length) - sizeof(struct rte_ipv4_hdr);
-		if (offset + payload_len > mbuf->pkt_len) {
-			rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for IPv4 payload\n");
-		}
-
-		// Assume checksum is correct
-		if (ipv4_hdr->next_proto_id == IPPROTO_ICMP) {
-			// printf("MAIN: is ICMP\n");
-			
-			struct rte_icmp_hdr icmp_hdr_tmp;
-			struct rte_icmp_hdr const *icmp_hdr = rte_pktmbuf_read(
-				mbuf, offset, sizeof icmp_hdr_tmp, &icmp_hdr_tmp);
-			offset += sizeof icmp_hdr_tmp;
-			payload_len -= sizeof(struct rte_icmp_hdr);
-
-			if (icmp_hdr == NULL) {
-				rte_exit(EXIT_FAILURE, "MAIN: WARNING: packet too short for ICMP header\n");
-			}
-
-			if (icmp_hdr->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) {
-				// printf("MAIN: is ICMP echo request\n");
-
-				if (mbuf->next) {
-					rte_exit(EXIT_FAILURE, "MAIN: WARNING: we don't support multi-segment pings\n");
-				}
-
-				// Craft a response
-				struct rte_mbuf *reply_mbuf = rte_pktmbuf_alloc(mbuf->pool);
-				if (reply_mbuf == NULL) {
-					rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to allocate mbuf for ICMP reply\n");
-				}
-
-				struct icmp_reply_hdrs_t {
-					struct rte_ether_hdr ether_hdr;
-					struct rte_ipv4_hdr ipv4_hdr;
-					struct rte_icmp_hdr icmp_hdr;
-				} *reply_data = (void*) rte_pktmbuf_append(
-					reply_mbuf, sizeof(struct icmp_reply_hdrs_t) + payload_len);
-				static_assert(
-					sizeof(struct icmp_reply_hdrs_t) ==
-					sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr),
-					"icmp_reply_hdrs_t must have no padding"
-				);
-
-				if (reply_data == NULL) {
-					rte_pktmbuf_free(reply_mbuf);
-					rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to append data to mbuf for ICMP reply\n");
-				}
-				*reply_data = (struct icmp_reply_hdrs_t){
-					.ether_hdr = {
-						.dst_addr = ether_hdr->src_addr,
-						.src_addr = mac_addrs[port],
-						.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4),
-					},
-					.ipv4_hdr = {
-						.version_ihl = RTE_IPV4_VHL_DEF,
-						.type_of_service = 0,
-						.total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr) + payload_len),
-						.packet_id = 0,
-						.fragment_offset = rte_cpu_to_be_16(RTE_IPV4_HDR_DF_FLAG),
-						.time_to_live = 64,
-						.next_proto_id = IPPROTO_ICMP,
-						.hdr_checksum = 0,
-						.src_addr = ip_addrs[port],
-						.dst_addr = ipv4_hdr->src_addr,
-					},
-					.icmp_hdr = {
-						.icmp_type = RTE_IP_ICMP_ECHO_REPLY,
-						.icmp_code = 0,
-						.icmp_cksum = 0,
-						.icmp_ident = icmp_hdr->icmp_ident,
-						.icmp_seq_nb = icmp_hdr->icmp_seq_nb,
-					}
-				};
-
-				memcpy(reply_data + 1, rte_pktmbuf_mtod_offset(mbuf, char*, offset), payload_len);
-				reply_data->ipv4_hdr.hdr_checksum = rte_ipv4_cksum(&reply_data->ipv4_hdr);
-				reply_data->icmp_hdr.icmp_cksum = ~rte_raw_cksum(&reply_data->icmp_hdr, sizeof(struct rte_icmp_hdr) + payload_len);
-
-				const uint16_t nb_tx = rte_eth_tx_burst(port, 0, &reply_mbuf, 1);
-				if (nb_tx < 1) {
-					rte_pktmbuf_free(reply_mbuf);
-					rte_exit(EXIT_FAILURE, "MAIN: WARNING: failed to send ICMP reply\n");
-				} else {
-					// printf("MAIN: Sent ICMP reply on port %u.\n", port);
-				}
-			} else {
-				rte_exit(EXIT_FAILURE, "MAIN: WARNING: Unknown ICMP type\n");
-			}
-		} else {
-			printf("MAIN: WARNING: Unknown IPv4 next protocol\n");
-		}
-	} else if (ether_type == RTE_ETHER_TYPE_ARP) {
-		printf("MAIN: is ARP\n");
-		arp_handler(mbuf, offset, ether_hdr, port, &ip_addrs[port], &mac_addrs[port]);
-	} else {
-		printf("MAIN: WARNING: Unknown ether type\n");
-	}
-}
-
 /* >8 End of main functional part of port initialization. */
 
 /*
@@ -351,15 +112,6 @@ static __rte_noreturn void
 lcore_main(void)
 {
 	uint16_t port;
-	uint32_t ip_addrs[RTE_MAX_ETHPORTS];
-	memset(ip_addrs, 0, sizeof ip_addrs);
-
-	struct rte_ether_addr mac_addrs[RTE_MAX_ETHPORTS];
-	RTE_ETH_FOREACH_DEV(port) {
-		if (rte_eth_macaddr_get(port, &mac_addrs[port])) {
-			rte_exit(EXIT_FAILURE, "Failed to get MAC address for port %u\n", port);
-		}
-	}
 
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
@@ -378,7 +130,7 @@ lcore_main(void)
 
 	/* Main work of application loop. 8< */
 	for (uint32_t s = 0;; s++) {
-		// if (s % (1 << 26) == 0) printf("MAIN: heartbeat %d\n", s / (1 << 26));
+		if (s % (1 << 26) == 0) printf("MAIN: heartbeat %d\n", s / (1 << 26));
 		/*
 		 * Receive packets on a port and forward them on the paired
 		 * port. The mapping is 0 -> 1, 1 -> 0, 2 -> 3, 3 -> 2, etc.
@@ -393,14 +145,13 @@ lcore_main(void)
 			if (unlikely(nb_rx == 0))
 				continue;
 
-			// printf("MAIN: Received %d packets on port %u.\n", nb_rx, port);
+			printf("MAIN: Received %d packets on port %u.\n", nb_rx, port);
 			for (uint16_t i = 0; i < nb_rx; i++) {
 				struct rte_mbuf *mbuf = bufs[i];
 
-				// printf("MAIN: packet number %d with size %d\n",
-				// 	i, mbuf->buf_len);
+				printf("MAIN: packet number %ld with size %d\n",
+					i, mbuf->buf_len);
 
-				packet_handler(port, mbuf, ip_addrs, mac_addrs);
 				rte_pktmbuf_free(mbuf);
 			}
 		}
@@ -431,6 +182,8 @@ main(int argc, char *argv[])
 
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
+	if (nb_ports < 2 || (nb_ports & 1))
+		rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 
@@ -440,7 +193,7 @@ main(int argc, char *argv[])
 	/* >8 End of allocating mempool to hold mbuf. */
 
 	if (mbuf_pool == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool %s\n", rte_strerror(rte_errno));
+		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* Initializing all ports. 8< */
 	RTE_ETH_FOREACH_DEV(portid)
