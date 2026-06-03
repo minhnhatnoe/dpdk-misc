@@ -10,7 +10,6 @@
 #include <rte_cycles.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
-#include <rte_net.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -100,6 +99,11 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	return 0;
 }
+
+static inline void
+packet_handler(uint16_t port, struct rte_mbuf *mbuf) {
+}
+
 /* >8 End of main functional part of port initialization. */
 
 /*
@@ -149,9 +153,10 @@ lcore_main(void)
 			for (uint16_t i = 0; i < nb_rx; i++) {
 				struct rte_mbuf *mbuf = bufs[i];
 
-				printf("MAIN: packet number %ld with size %d\n",
-					i, mbuf->buf_len);
+				printf("MAIN: packet number %d with size %d\n",
+				    i, mbuf->buf_len);
 
+				packet_handler(port, mbuf);
 				rte_pktmbuf_free(mbuf);
 			}
 		}
@@ -182,8 +187,6 @@ main(int argc, char *argv[])
 
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
-	if (nb_ports < 2 || (nb_ports & 1))
-		rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 
@@ -193,7 +196,7 @@ main(int argc, char *argv[])
 	/* >8 End of allocating mempool to hold mbuf. */
 
 	if (mbuf_pool == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool %s\n", rte_strerror(rte_errno));
 
 	/* Initializing all ports. 8< */
 	RTE_ETH_FOREACH_DEV(portid)
