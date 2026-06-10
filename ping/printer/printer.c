@@ -187,6 +187,8 @@ main(int argc, char *argv[])
 
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
+	if (nb_ports == 0)
+		rte_exit(EXIT_FAILURE, "Error: there must be at least 1 port\n");
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 

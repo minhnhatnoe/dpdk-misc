@@ -49,6 +49,36 @@ For the purpose of spamming ping responses though, we only need to care about it
 
 ## Printing out packets
 
+We start with the most contrived example: printing out the size of packets as we receive them.
+
+### Boilerplate
+
+DPDK provides dozens of sample applications to get you started with the boilerplate. For our purposes, we use dpdk-skeleton, which I have provided at [file:ping/skeleton] for your convenience.
+
+<!-- Note regarding skeleton -->
+    The skeleton is a very good starting point for prototypes. Starting at `basicfwd.c`, the `main` function performs minimal initialization tasks, then invokes `lcore_main`, the main loop. `lcore_main` retrieves packets from even-numbered network cards using `rte_eth_rx_burst` and forwards them to odd-numbered network cards using `rte_eth_tx_burst`. Take some time to familiarize yourself with `basicfwd.c` before proceeding.
+<!-- basicfwd.c embed -->
+
+Running `make` in `ping/skeleton` will compile the the code into a binary, which you can invoke with `sudo build/basic_fwd`. Most likely, the code will fail since it is not compatible with our setup.
+
+### Receiving packets
+
+To start receiving packets, we have to make some adjustment to the skeleton.
+
+1. Instead of forwarding, log packets' lengths and free them. Also add heartbeat prints so we know the code is looping.
+<!-- basicfwd.c embed -->
+2. Remove the constraint on port count, since any non-zero number of ports works.
+<!-- basicfwd.c embed -->
+3. Remove promiscuous mode, since AWS ENA does not support it.
+<!-- basicfwd.c embed -->
+4. Create `packet_handler` for use later.
+<!-- basicfwd.c embed -->
+
+You should now see some incoming packets when compiling and running the code. The code after the above modification is available at [file:ping/printer]
+
+### Ethernet (Layer 2)
+
+Knowing the sizes of packets is not really that useful for our purposes. It'd be much better if we can inspect the contents of individual packets. From this point onwards, we decode the packets using the layer by layer, starting with [Ethernet frames](https://en.wikipedia.org/wiki/Ethernet_frame).
 
 
 
