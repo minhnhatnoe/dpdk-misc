@@ -67,7 +67,7 @@ To start receiving packets, we have to make some adjustment to the skeleton.
 
 1. Instead of forwarding, log packets' lengths and free them. Also add heartbeat prints so we know the code is looping.
 <!-- basicfwd.c embed -->
-2. Remove the constraint on port count, since any non-zero number of ports works.
+2. Change the constraint on port count. Supporting only one port for simplicity.
 <!-- basicfwd.c embed -->
 3. Remove promiscuous mode, since AWS ENA does not support it.
 <!-- basicfwd.c embed -->
@@ -78,9 +78,10 @@ You should now see some incoming packets when compiling and running the code. Th
 
 ### Ethernet (Layer 2)
 
-Knowing the sizes of packets is not really that useful for our purposes. It'd be much better if we can inspect the contents of individual packets. From this point onwards, we decode the packets using the layer by layer, starting with [Ethernet frames](https://en.wikipedia.org/wiki/Ethernet_frame).
+Knowing the sizes of packets is not really that useful for our purposes. It'd be much better if we can inspect the contents of individual packets. From this point onwards, we decode the packets layer by layer, starting with [Ethernet frames](https://en.wikipedia.org/wiki/Ethernet_frame).
 
-
+Ethernet frames typically starts with 14 bytes of header data, which we will read and parse using `rte_pktmbuf_read`.
+<!-- header table -->
 
 ## Postscript
 
